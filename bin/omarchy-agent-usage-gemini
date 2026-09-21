@@ -3,7 +3,7 @@
 
 Parses local transcript logs, history, and conversation sessions from
 ~/.gemini/antigravity-cli to provide accurate token tracking, model breakdowns,
-and rate-limit windows for Gemini.
+and real-time rate-limit windows for Gemini.
 """
 
 from __future__ import annotations
@@ -14,15 +14,16 @@ import glob
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 AGENT_ID = "gemini"
 AGENT_NAME = "Gemini"
 TIER_LABEL = "Gemini Advanced"
 
-HOURLY_QUOTA_TOKENS = 500_000
-WEEKLY_QUOTA_TOKENS = 4_000_000
+# Realistic quotas for rolling sessions and weekly limits
+# Can be overridden via environment variables
+HOURLY_QUOTA_TOKENS = int(os.environ.get("GEMINI_HOURLY_QUOTA_TOKENS", 250_000))
+WEEKLY_QUOTA_TOKENS = int(os.environ.get("GEMINI_WEEKLY_QUOTA_TOKENS", 2_500_000))
 
 
 def local_date_string(value: dt.datetime | None = None) -> str:
@@ -100,7 +101,16 @@ def collect_usage() -> dict:
     active_model = detect_active_model()
 
     base_dir = Path(os.path.expanduser("~/.gemini/antigravity-cli"))
-    transcript_files = list(base_dir.glob("brain/*/.system_generated/logs/transcript*.jsonl"))
+
+    # Prioritize full transcripts for exact un-truncated token counts
+    transcript_files: list[Path] = []
+    for conv in base_dir.glob("brain/*"):
+        full_f = conv / ".system_generated" / "logs" / "transcript_full.jsonl"
+        compact_f = conv / ".system_generated" / "logs" / "transcript.jsonl"
+        if full_f.is_file():
+            transcript_files.append(full_f)
+        elif compact_f.is_file():
+            transcript_files.append(compact_f)
 
     for path in transcript_files:
         conv_id = path.parents[2].name
@@ -175,12 +185,13 @@ def collect_usage() -> dict:
         except Exception:
             continue
 
-    # Limits: hourly session window and 7-day weekly window
-    hourly_pct = min(1.0, round(tokens_last_hour / HOURLY_QUOTA_TOKENS, 3))
-    weekly_pct = min(1.0, round(tokens_last_7_days / WEEKLY_QUOTA_TOKENS, 3))
+    # Live calculated limits without arbitrary minimum floors
+    hourly_pct = min(1.0, round(tokens_last_hour / HOURLY_QUOTA_TOKENS, 4))
+    weekly_pct = min(1.0, round(tokens_last_7_days / WEEKLY_QUOTA_TOKENS, 4))
 
-    # Next hour reset
+    # Next hour reset (top of next hour)
     next_hour = (now_utc + dt.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
     # Next weekly reset (next Monday 00:00 UTC)
     days_ahead = 7 - now_utc.weekday()
     if days_ahead <= 0:
@@ -189,13 +200,13 @@ def collect_usage() -> dict:
 
     limits = [
         {
-            "label": "Session (Hourly)",
-            "percent": max(0.05, hourly_pct),
+            "label": "Session (1-hour)",
+            "percent": hourly_pct,
             "resetsAt": next_hour.isoformat(),
         },
         {
             "label": "Weekly (7-day)",
-            "percent": max(0.10, weekly_pct),
+            "percent": weekly_pct,
             "resetsAt": next_week.isoformat(),
         },
     ]
@@ -211,14 +222,14 @@ def collect_usage() -> dict:
         "authHelpText": "",
         "updatedAt": now_utc.isoformat(),
         "limits": limits,
-        "todayPrompts": max(today_prompts, 1),
-        "todaySessions": max(len(today_sessions), 1),
+        "todayPrompts": today_prompts,
+        "todaySessions": len(today_sessions),
         "todayTotalTokens": today_total_tokens,
         "todayTokensByModel": today_tokens_by_model,
         "recentDays": [recent[d] for d in recent_dates],
-        "totalPrompts": max(total_prompts, 1),
-        "totalSessions": max(len(sessions), 1),
-        "activeDays": max(len(active_days), 1),
+        "totalPrompts": total_prompts,
+        "totalSessions": len(sessions),
+        "activeDays": len(active_days),
         "activeDates": sorted(active_days) if active_days else [today_date],
         "modelUsage": model_usage,
     }

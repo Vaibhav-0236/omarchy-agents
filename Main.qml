@@ -114,8 +114,22 @@ Item {
 
   // -------------------------------------------------------------- refresh
 
-  property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 900)))
+  property int refreshIntervalSec: Math.max(10, Number(setting("refreshIntervalSec", 30)))
   property string pendingUpdateKind: ""
+
+  FileView {
+    path: root.home + "/.gemini/antigravity-cli/history.jsonl"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: historyDebounce.restart()
+  }
+
+  Timer {
+    id: historyDebounce
+    interval: 1200
+    repeat: false
+    onTriggered: root.runUpdate("normal")
+  }
 
   Timer {
     interval: root.refreshIntervalSec * 1000
